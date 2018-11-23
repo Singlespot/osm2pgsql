@@ -324,7 +324,8 @@ void place_tag_processor::process_tags(osmium::OSMObject const &o)
 
     if (places.empty()) {
         bool postcode = address.find("postcode") != address.end();
-        if (placebuilding && (!names.empty() || placehouse || postcode)) {
+        // if (placebuilding && (!names.empty() || placehouse || postcode)) {
+        if (placebuilding && (1 || placehouse || postcode)) {
             places.emplace_back("building", "yes");
         } else if (placehouse) {
             places.emplace_back("place", "house");
