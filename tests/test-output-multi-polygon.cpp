@@ -24,6 +24,8 @@
 #include "tests/common.hpp"
 
 int main(int argc, char *argv[]) {
+    (void)argc;
+    (void)argv;
     std::unique_ptr<pg::tempdb> db;
 
     try {
@@ -34,7 +36,6 @@ int main(int argc, char *argv[]) {
     }
 
     try {
-        std::shared_ptr<middle_pgsql_t> mid_pgsql(new middle_pgsql_t());
         options_t options;
         options.database_options = db->database_options;
         options.num_procs = 1;
@@ -44,11 +45,23 @@ int main(int argc, char *argv[]) {
         std::shared_ptr<geometry_processor> processor = geometry_processor::create("polygon", &options);
 
         export_list columns;
-        { taginfo info; info.name = "building"; info.type = "text"; columns.add(osmium::item_type::way, info); }
+        {
+            taginfo info;
+            info.name = "building";
+            info.type = "text";
+            columns.add(osmium::item_type::way, info);
+        }
 
-        auto out_test = std::make_shared<output_multi_t>("foobar_buildings", processor, columns, mid_pgsql.get(), options);
+        std::shared_ptr<middle_t> mid_pgsql(new middle_pgsql_t(&options));
+        mid_pgsql->start();
+        auto midq = mid_pgsql->get_query_instance(mid_pgsql);
 
-        osmdata_t osmdata(mid_pgsql, out_test, options.projection);
+        auto out_test = std::make_shared<output_multi_t>(
+            "foobar_buildings", processor, columns, midq, options,
+            std::make_shared<db_copy_thread_t>(
+                options.database_options.conninfo()));
+
+        osmdata_t osmdata(mid_pgsql, out_test);
 
         testing::parse("tests/liechtenstein-2013-08-03.osm.pbf", "pbf",
                        options, &osmdata);

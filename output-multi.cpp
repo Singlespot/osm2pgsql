@@ -11,64 +11,65 @@
 #include <boost/algorithm/string/predicate.hpp>
 #include <vector>
 
-output_multi_t::output_multi_t(const std::string &name,
-                               std::shared_ptr<geometry_processor> processor_,
-                               const struct export_list &export_list_,
-                               const middle_query_t *mid_,
-                               const options_t &options_)
-: output_t(mid_, options_),
-  m_tagtransform(tagtransform_t::make_tagtransform(&m_options)),
-  m_export_list(new export_list(export_list_)), m_processor(processor_),
-  m_proj(m_options.projection),
+output_multi_t::output_multi_t(
+    std::string const &name, std::shared_ptr<geometry_processor> processor_,
+    export_list const &export_list, std::shared_ptr<middle_query_t> const &mid,
+    options_t const &options,
+    std::shared_ptr<db_copy_thread_t> const &copy_thread)
+: output_t(mid, options),
+  m_tagtransform(tagtransform_t::make_tagtransform(&m_options, export_list)),
+  m_processor(processor_), m_proj(m_options.projection),
   // TODO: we could in fact have something that is interested in nodes and
   // ways..
   m_osm_type(m_processor->interests(geometry_processor::interest_node)
                  ? osmium::item_type::node
                  : osmium::item_type::way),
-  m_table(new table_t(
-      m_options.database_options.conninfo(), name, m_processor->column_type(),
-      m_export_list->normal_columns(m_osm_type), m_options.hstore_columns,
-      m_processor->srid(), m_options.append, m_options.slim, m_options.droptemp,
-      m_options.hstore_mode, m_options.enable_hstore_index,
-      m_options.tblsmain_data, m_options.tblsmain_index)),
+  m_table(new table_t(name, m_processor->column_type(),
+                      export_list.normal_columns(m_osm_type),
+                      m_options.hstore_columns, m_processor->srid(),
+                      m_options.append, m_options.hstore_mode, copy_thread)),
   ways_done_tracker(new id_tracker()),
   m_expire(m_options.expire_tiles_zoom, m_options.expire_tiles_max_bbox,
            m_options.projection),
   buffer(1024, osmium::memory::Buffer::auto_grow::yes),
   m_builder(m_options.projection, m_options.enable_multi),
-  m_way_area(m_export_list->has_column(m_osm_type, "way_area"))
+  m_way_area(export_list.has_column(m_osm_type, "way_area"))
 {
 }
 
-output_multi_t::output_multi_t(const output_multi_t &other)
-: output_t(other.m_mid, other.m_options),
-  m_tagtransform(tagtransform_t::make_tagtransform(&m_options)),
-  m_export_list(new export_list(*other.m_export_list)),
-  m_processor(other.m_processor), m_proj(other.m_proj),
-  m_osm_type(other.m_osm_type), m_table(new table_t(*other.m_table)),
+output_multi_t::output_multi_t(
+    output_multi_t const *other, std::shared_ptr<middle_query_t> const &mid,
+    std::shared_ptr<db_copy_thread_t> const &copy_thread)
+: output_t(mid, other->m_options),
+  m_tagtransform(other->m_tagtransform->clone()),
+  m_processor(other->m_processor), m_proj(other->m_proj),
+  m_osm_type(other->m_osm_type),
+  m_table(new table_t(*other->m_table, copy_thread)),
   // NOTE: we need to know which ways were used by relations so each thread
   // must have a copy of the original marked done ways, its read only so its
   // ok
-  ways_done_tracker(other.ways_done_tracker),
+  ways_done_tracker(other->ways_done_tracker),
   m_expire(m_options.expire_tiles_zoom, m_options.expire_tiles_max_bbox,
            m_options.projection),
   buffer(1024, osmium::memory::Buffer::auto_grow::yes),
   m_builder(m_options.projection, m_options.enable_multi),
-  m_way_area(other.m_way_area)
+  m_way_area(other->m_way_area)
 {
 }
 
 output_multi_t::~output_multi_t() = default;
 
-std::shared_ptr<output_t> output_multi_t::clone(const middle_query_t* cloned_middle) const
+std::shared_ptr<output_t> output_multi_t::clone(
+    std::shared_ptr<middle_query_t> const &mid,
+    std::shared_ptr<db_copy_thread_t> const &copy_thread) const
 {
-    auto *clone = new output_multi_t(*this);
-    clone->m_mid = cloned_middle;
-    return std::shared_ptr<output_t>(clone);
+    return std::shared_ptr<output_t>(
+        new output_multi_t(this, mid, copy_thread));
 }
 
 int output_multi_t::start() {
-    m_table->start();
+    m_table->start(m_options.database_options.conninfo(),
+                   m_options.tblsmain_data);
     return 0;
 }
 
@@ -172,7 +173,7 @@ int output_multi_t::pending_relation(osmid_t id, int exists) {
     buffer.clear();
     if (m_mid->relations_get(id, buffer)) {
         auto const &rel = buffer.get<osmium::Relation>(0);
-        ret = process_relation(rel, exists, true);
+        ret = process_relation(rel, exists);
     }
 
     return ret;
@@ -180,7 +181,10 @@ int output_multi_t::pending_relation(osmid_t id, int exists) {
 
 void output_multi_t::stop(osmium::thread::Pool *pool)
 {
-    pool->submit(std::bind(&table_t::stop, m_table.get()));
+    pool->submit([this]() {
+        m_table->stop(m_options.slim & !m_options.droptemp,
+                      m_options.enable_hstore_index, m_options.tblsmain_index);
+    });
     if (m_options.expire_tiles_zoom_min > 0) {
         m_expire.output_and_destroy(m_options.expire_tiles_filename.c_str(),
                                     m_options.expire_tiles_zoom_min);
@@ -284,8 +288,7 @@ int output_multi_t::process_node(osmium::Node const &node)
 {
     // check if we are keeping this node
     taglist_t outtags;
-    auto filter = m_tagtransform->filter_tags(node, 0, 0, *m_export_list.get(),
-                                              outtags, true);
+    auto filter = m_tagtransform->filter_tags(node, 0, 0, outtags, true);
     if (!filter) {
         // grab its geom
         auto geom = m_processor->process_node(node.location(), &m_builder);
@@ -312,8 +315,8 @@ int output_multi_t::reprocess_way(osmium::Way *way, bool exists)
 
     //check if we are keeping this way
     taglist_t outtags;
-    unsigned int filter = m_tagtransform->filter_tags(
-        *way, 0, 0, *m_export_list.get(), outtags, true);
+    unsigned int filter =
+        m_tagtransform->filter_tags(*way, 0, 0, outtags, true);
     if (!filter) {
         m_mid->nodes_get_list(&(way->nodes()));
         auto geom = m_processor->process_way(*way, &m_builder);
@@ -327,7 +330,7 @@ int output_multi_t::reprocess_way(osmium::Way *way, bool exists)
 int output_multi_t::process_way(osmium::Way *way) {
     //check if we are keeping this way
     taglist_t outtags;
-    auto filter = m_tagtransform->filter_tags(*way, 0, 0, *m_export_list.get(), outtags, true);
+    auto filter = m_tagtransform->filter_tags(*way, 0, 0, outtags, true);
     if (!filter) {
         //get the geom from the middle
         if (m_mid->nodes_get_list(&(way->nodes())) < 1)
@@ -350,9 +353,7 @@ int output_multi_t::process_way(osmium::Way *way) {
     return 0;
 }
 
-
-int output_multi_t::process_relation(osmium::Relation const &rel,
-                                     bool exists, bool pending)
+int output_multi_t::process_relation(osmium::Relation const &rel, bool exists)
 {
     //if it may exist already, delete it first
     if(exists)
@@ -360,51 +361,32 @@ int output_multi_t::process_relation(osmium::Relation const &rel,
 
     //does this relation have anything interesting to us
     taglist_t rel_outtags;
-    auto filter = m_tagtransform->filter_tags(rel, 0, 0, *m_export_list.get(),
-                                              rel_outtags, true);
+    auto filter = m_tagtransform->filter_tags(rel, 0, 0, rel_outtags, true);
     if (!filter) {
         //TODO: move this into geometry processor, figure a way to come back for tag transform
         //grab ways/nodes of the members in the relation, bail if none were used
-        if (m_relation_helper.set(rel, (middle_t *)m_mid) < 1)
+        if (m_relation_helper.set(rel, m_mid.get()) < 1)
             return 0;
 
-        //NOTE: make_polygon is preset here this is to force the tag matching/superseded stuff
+        //NOTE: make_polygon is preset here this is to force the tag matching
         //normally this wouldnt work but we tell the tag transform to allow typeless relations
         //this is needed because the type can get stripped off by the rel_tag filter above
         //if the export list did not include the type tag.
-        //TODO: find a less hacky way to do the matching/superseded and tag copying stuff without
+        //TODO: find a less hacky way to do the matching and tag copying stuff without
         //all this trickery
         int roads;
         int make_boundary, make_polygon;
         taglist_t outtags;
         filter = m_tagtransform->filter_rel_member_tags(
             rel_outtags, m_relation_helper.data, m_relation_helper.roles,
-            &m_relation_helper.superseded.front(), &make_boundary,
-            &make_polygon, &roads, *m_export_list.get(), outtags, true);
+            &make_boundary, &make_polygon, &roads, outtags, true);
         if (!filter)
         {
-            m_relation_helper.add_way_locations((middle_t *)m_mid);
+            m_relation_helper.add_way_locations(m_mid.get());
             auto geoms = m_processor->process_relation(
                 rel, m_relation_helper.data, &m_builder);
             for (const auto geom : geoms) {
                 copy_to_table(-rel.id(), geom, outtags);
-            }
-
-            //TODO: should this loop be inside the if above just in case?
-            //take a look at each member to see if its superseded (tags on it matched the tags on the relation)
-            size_t i = 0;
-            for (auto const &w : m_relation_helper.data.select<osmium::Way>()) {
-                //tags matched so we are keeping this one with this relation
-                if (m_relation_helper.superseded[i]) {
-                    //just in case it wasnt previously with this relation we get rid of them
-                    way_delete(w.id());
-                    //the other option is that we marked them pending in the way processing so here we mark them
-                    //done so when we go back over the pendings we can just skip it because its in the done list
-                    //TODO: dont do this when working with pending relations to avoid thread races
-                    if(!pending)
-                        ways_done_tracker->mark(w.id());
-                }
-                ++i;
             }
         }
     }

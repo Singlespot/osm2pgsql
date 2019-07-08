@@ -24,6 +24,8 @@
 #include "tests/common.hpp"
 
 int main(int argc, char *argv[]) {
+    (void)argc;
+    (void)argv;
     std::unique_ptr<pg::tempdb> db;
 
     try {
@@ -34,7 +36,6 @@ int main(int argc, char *argv[]) {
     }
 
     try {
-        std::shared_ptr<middle_pgsql_t> mid_pgsql(new middle_pgsql_t());
         options_t options;
         options.database_options = db->database_options;
         options.num_procs = 1;
@@ -44,12 +45,23 @@ int main(int argc, char *argv[]) {
             geometry_processor::create("line", &options);
 
         export_list columns;
-        { taginfo info; info.name = "highway"; info.type = "text"; columns.add(osmium::item_type::way, info); }
+        {
+            taginfo info;
+            info.name = "highway";
+            info.type = "text";
+            columns.add(osmium::item_type::way, info);
+        }
 
+        std::shared_ptr<middle_t> mid_pgsql(new middle_pgsql_t(&options));
+        mid_pgsql->start();
+        auto midq = mid_pgsql->get_query_instance(mid_pgsql);
         // This actually uses the multi-backend with C transforms, not Lua transforms. This is unusual and doesn't reflect real practice
-        auto out_test = std::make_shared<output_multi_t>("foobar_highways", processor, columns, mid_pgsql.get(), options);
+        auto out_test = std::make_shared<output_multi_t>(
+            "foobar_highways", processor, columns, midq, options,
+            std::make_shared<db_copy_thread_t>(
+                options.database_options.conninfo()));
 
-        osmdata_t osmdata(mid_pgsql, out_test, options.projection);
+        osmdata_t osmdata(mid_pgsql, out_test);
 
         testing::parse("tests/liechtenstein-2013-08-03.osm.pbf", "pbf",
                        options, &osmdata);

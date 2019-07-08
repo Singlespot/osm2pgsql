@@ -7,13 +7,13 @@
 #else
 #define basename /*SKIP IT*/
 #endif
-#include <stdio.h>
-#include <string.h>
-#include <stdexcept>
-#include <sstream>
-#include <thread> // for number of threads
 #include <boost/format.hpp>
+#include <cstdio>
+#include <cstring>
 #include <osmium/version.hpp>
+#include <sstream>
+#include <stdexcept>
+#include <thread> // for number of threads
 
 #ifdef HAVE_LUA
 extern "C" {
@@ -230,9 +230,9 @@ namespace
             printf("    %s -c -d gis --slim -C <cache size> -k \\\n", name);
             printf("      --flat-nodes <flat nodes> planet-latest.osm.pbf\n");
             printf("where\n");
-            printf("    <cache size> is 20000 on machines with 24GB or more RAM \n");
+            printf("    <cache size> is 50000 on machines with 64GB or more RAM \n");
             printf("      or about 75%% of memory in MB on machines with less\n");
-            printf("    <flat nodes> is a location where a 19GB file can be saved.\n");
+            printf("    <flat nodes> is a location where a 50+GB file can be saved.\n");
             printf("\n");
             printf("A typical command to update a database imported with the above command is\n");
             printf("    osmosis --rri workingDirectory=<osmosis dir> --simc --wxc - \\\n");
@@ -592,7 +592,14 @@ void options_t::check_options()
     }
 
     if (cache == 0) {
-        fprintf(stderr, "WARNING: ram cache is disabled. This will likely slow down processing a lot.\n\n");
+        if (!slim) {
+            throw std::runtime_error(
+                "Ram node cache can only be disable in slim mode.\n");
+        }
+        if (!flat_node_cache_enabled) {
+            fprintf(stderr, "WARNING: ram cache is disabled. This will likely "
+                            "slow down processing a lot.\n\n");
+        }
     }
 
     if (num_procs < 1) {

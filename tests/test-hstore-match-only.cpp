@@ -32,6 +32,8 @@ The tags of inteest are specified in hstore-match-only.style
 #include "tests/common-pg.hpp"
 
 int main(int argc, char *argv[]) {
+    (void)argc;
+    (void)argv;
     std::unique_ptr<pg::tempdb> db;
 
     try {
@@ -42,7 +44,6 @@ int main(int argc, char *argv[]) {
     }
 
     try {
-        std::shared_ptr<middle_pgsql_t> mid_pgsql(new middle_pgsql_t());
         options_t options;
         options.database_options = db->database_options;
         options.num_procs = 1;
@@ -53,12 +54,7 @@ int main(int argc, char *argv[]) {
         options.slim = 1;
         options.append = false;
 
-        auto out_test = std::make_shared<output_pgsql_t>(mid_pgsql.get(), options);
-
-        osmdata_t osmdata(mid_pgsql, out_test, options.projection);
-
-        testing::parse("tests/hstore-match-only.osm", "xml",
-                       options, &osmdata);
+        testing::run_osm2pgsql(options, "tests/hstore-match-only.osm", "xml");
 
         // tables should not contain any tag columns
         db->check_count(4, "select count(column_name) from information_schema.columns where table_name='osm2pgsql_test_point'");

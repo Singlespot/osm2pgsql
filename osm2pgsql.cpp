@@ -24,13 +24,15 @@
 */
 
 #include "config.h"
-#include "osmtypes.hpp"
-#include "reprojection.hpp"
+#include "db-copy.hpp"
+#include "middle-pgsql.hpp"
+#include "middle-ram.hpp"
 #include "options.hpp"
-#include "parse-osmium.hpp"
-#include "middle.hpp"
-#include "output.hpp"
 #include "osmdata.hpp"
+#include "osmtypes.hpp"
+#include "output.hpp"
+#include "parse-osmium.hpp"
+#include "reprojection.hpp"
 #include "util.hpp"
 
 #include <time.h>
@@ -53,14 +55,22 @@ int main(int argc, char *argv[])
         if(options.long_usage_bool)
             return 0;
 
-        //setup the middle
-        std::shared_ptr<middle_t> middle = middle_t::create_middle(options.slim);
+        //setup the middle and backend (output)
+        std::shared_ptr<middle_t> middle;
 
-        //setup the backend (output)
-        std::vector<std::shared_ptr<output_t> > outputs = output_t::create_outputs(middle.get(), options);
+        if (options.slim) {
+            // middle gets its own copy-in thread
+            middle = std::shared_ptr<middle_t>(new middle_pgsql_t(&options));
+        } else {
+            middle = std::shared_ptr<middle_t>(new middle_ram_t(&options));
+        }
 
+        middle->start();
+
+        auto outputs = output_t::create_outputs(
+            middle->get_query_instance(middle), options);
         //let osmdata orchestrate between the middle and the outs
-        osmdata_t osmdata(middle, outputs, options.projection);
+        osmdata_t osmdata(middle, outputs);
 
         fprintf(stderr, "Using projection SRS %d (%s)\n",
                 options.projection->target_srs(),

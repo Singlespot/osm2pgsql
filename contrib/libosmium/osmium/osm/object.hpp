@@ -5,7 +5,7 @@
 
 This file is part of Osmium (https://osmcode.org/libosmium).
 
-Copyright 2013-2018 Jochen Topf <jochen@topf.org> and others (see README).
+Copyright 2013-2019 Jochen Topf <jochen@topf.org> and others (see README).
 
 Boost Software License - Version 1.0 - August 17th, 2003
 
@@ -365,6 +365,20 @@ namespace osmium {
 
         using iterator       = osmium::memory::CollectionIterator<Item>;
         using const_iterator = osmium::memory::CollectionIterator<const Item>;
+
+        /**
+         * Remove all tags from this object.
+         *
+         * (This will not change the size of the object, the tags are simply
+         * marked as removed.)
+         */
+        void remove_tags() noexcept {
+            for (auto& subitem : *this) {
+                if (subitem.type() == osmium::item_type::tag_list) {
+                    subitem.set_removed(true);
+                }
+            }
+        }
 
         iterator begin() {
             return iterator(subitems_position());

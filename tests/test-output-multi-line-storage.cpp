@@ -7,11 +7,11 @@
 #include <stdexcept>
 #include <memory>
 
-#include "osmtypes.hpp"
-#include "osmdata.hpp"
-#include "middle.hpp"
-#include "output-multi.hpp"
+#include "middle-pgsql.hpp"
 #include "options.hpp"
+#include "osmdata.hpp"
+#include "osmtypes.hpp"
+#include "output-multi.hpp"
 #include "taginfo_impl.hpp"
 
 #include <sys/types.h>
@@ -24,6 +24,8 @@
 #include "tests/common.hpp"
 
 int main(int argc, char *argv[]) {
+    (void)argc;
+    (void)argv;
     std::unique_ptr<pg::tempdb> db;
 
     try {
@@ -44,17 +46,8 @@ int main(int argc, char *argv[]) {
         options.output_backend = "multi";
         options.style = "tests/test_output_multi_line_trivial.style.json";
 
-        //setup the middle
-        std::shared_ptr<middle_t> middle = middle_t::create_middle(options.slim);
-
-        //setup the backend (output)
-        std::vector<std::shared_ptr<output_t> > outputs = output_t::create_outputs(middle.get(), options);
-
-        //let osmdata orchestrate between the middle and the outs
-        osmdata_t osmdata(middle, outputs, options.projection);
-
-        testing::parse("tests/test_output_multi_line_storage.osm", "xml",
-                       options, &osmdata);
+        testing::run_osm2pgsql(
+            options, "tests/test_output_multi_line_storage.osm", "xml");
 
         db->check_count(1, "select count(*) from pg_catalog.pg_class where relname = 'test_line'");
         db->check_count(3, "select count(*) from test_line");

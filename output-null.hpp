@@ -8,11 +8,13 @@
 
 class output_null_t : public output_t {
 public:
-    output_null_t(const middle_query_t* mid_, const options_t &options);
-    output_null_t(const output_null_t& other);
+    output_null_t(std::shared_ptr<middle_query_t> const &mid,
+                  options_t const &options);
     virtual ~output_null_t();
 
-    std::shared_ptr<output_t> clone(const middle_query_t* cloned_middle) const override;
+    std::shared_ptr<output_t>
+    clone(std::shared_ptr<middle_query_t> const &mid,
+          std::shared_ptr<db_copy_thread_t> const &copy_thread) const override;
 
     int start() override;
     void stop(osmium::thread::Pool *pool) override;

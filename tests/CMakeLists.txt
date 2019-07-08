@@ -2,7 +2,6 @@ add_custom_target(check COMMAND ${CMAKE_CTEST_COMMAND} ${ARGS})
 add_dependencies(check osm2pgsql)
 
 add_library(common-pg STATIC common-pg.cpp common-pg.hpp common-cleanup.cpp common-cleanup.hpp)
-add_library(middle-tests STATIC middle-tests.cpp middle-tests.hpp)
 
 set(TESTS
   test-expire-tiles.cpp
@@ -30,14 +29,13 @@ set(TESTS
   test-parse-extra-args.cpp
   test-parse-xml2.cpp
   test-persistent-node-cache.cpp
-  test-pgsql-escape.cpp
   test-wildcard-match.cpp
 )
 
 foreach (test ${TESTS})
   get_filename_component(test_name ${test} NAME_WE)
   add_executable(${test_name} ${test})
-  target_link_libraries(${test_name} osm2pgsql_lib common-pg middle-tests)
+  target_link_libraries(${test_name} osm2pgsql_lib common-pg)
   add_test(NAME ${test_name} COMMAND ${test_name}
     WORKING_DIRECTORY ${osm2pgsql_SOURCE_DIR})
   add_dependencies(check ${test_name})
@@ -49,10 +47,8 @@ set(TEST_NODB
  test-expire-tiles
  test-middle-ram
  test-options-database
- test-options-parse
  test-parse-diff
  test-parse-xml2
- test-pgsql-escape
  test-wildcard-match
 )
 
@@ -62,6 +58,23 @@ endforeach()
 
 set_property(TEST test-middle-flat PROPERTY LABELS FlatNodes)
 set_property(TEST test-output-pgsql PROPERTY LABELS FlatNodes)
+
+# Fixture for creating test tablespace under a pg_virtualenv
+if (NOT WIN32)
+  message(STATUS "Added tablespace fixture...")
+  add_test(NAME FixtureTablespaceSetup
+      COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/fixture-tablespace-setup
+      WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+  add_test(NAME FixtureTablespaceCleanup
+      COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/fixture-tablespace-cleanup
+      WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+  set_tests_properties(FixtureTablespaceSetup PROPERTIES FIXTURES_SETUP Tablespace)
+  set_tests_properties(FixtureTablespaceCleanup PROPERTIES FIXTURES_CLEANUP Tablespace)
+endif()
+
+set_tests_properties(test-output-pgsql-tablespace
+                     PROPERTIES FIXTURES_REQUIRED Tablespace)
 
 if (NOT HAVE_LUA)
   # these tests require LUA support
@@ -77,6 +90,8 @@ if (PYTHONINTERP_FOUND)
   set_tests_properties(regression-test-pbf PROPERTIES TIMEOUT ${TESTING_TIMEOUT})
   set_tests_properties(regression-test-pbf
       PROPERTIES ENVIRONMENT "HAVE_LUA=${LUA_FOUND}")
+  set_tests_properties(regression-test-pbf
+                       PROPERTIES FIXTURES_REQUIRED Tablespace)
   message(STATUS "Added test: regression-test-pbf (needs Python with psycopg2 module)")
 else()
   message(WARNING "Can not find python, regression test disabled")

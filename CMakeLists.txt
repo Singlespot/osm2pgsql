@@ -168,17 +168,18 @@ if (NOT HAVE_UNISTD_H AND NOT EXISTS ${CMAKE_CURRENT_BINARY_DIR}/unistd.h)
 endif()
 
 set(osm2pgsql_lib_SOURCES
+  db-copy.cpp
   expire-tiles.cpp
   geometry-processor.cpp
   id-tracker.cpp
   middle-pgsql.cpp
   middle-ram.cpp
-  middle.cpp
   node-persistent-cache.cpp
   node-ram-cache.cpp
   options.cpp
   osmdata.cpp
   osmium-builder.cpp
+  gazetteer-style.cpp
   output-gazetteer.cpp
   output-multi.cpp
   output-null.cpp
@@ -197,6 +198,7 @@ set(osm2pgsql_lib_SOURCES
   tagtransform-c.cpp
   util.cpp
   wildcmp.cpp
+  db-copy.hpp
   expire-tiles.hpp
   geometry-processor.hpp
   id-tracker.hpp
@@ -209,6 +211,7 @@ set(osm2pgsql_lib_SOURCES
   osmdata.hpp
   osmium-builder.hpp
   osmtypes.hpp
+  gazetteer-style.hpp
   output-gazetteer.hpp
   output-multi.hpp
   output-null.hpp

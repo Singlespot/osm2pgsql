@@ -4,6 +4,7 @@
 #include "output-pgsql.hpp"
 #include "output-gazetteer.hpp"
 #include "output-null.hpp"
+#include "taginfo_impl.hpp"
 
 #include <stdio.h>
 #include <string.h>
@@ -12,6 +13,8 @@
 #include <stdexcept>
 #include <boost/format.hpp>
 #include <boost/algorithm/string/predicate.hpp>
+
+#include "tests/common-pg.hpp"
 
 namespace alg = boost::algorithm;
 
@@ -69,59 +72,54 @@ void test_middles()
 {
     const char* a1[] = {"osm2pgsql", "--slim", "tests/liechtenstein-2013-08-03.osm.pbf"};
     options_t options = options_t(len(a1), const_cast<char **>(a1));
-    std::shared_ptr<middle_t> mid = middle_t::create_middle(options.slim);
-    if(dynamic_cast<middle_pgsql_t *>(mid.get()) == nullptr)
-    {
-        throw std::logic_error("Using slim mode we expected a pgsql middle");
+    if (!options.slim) {
+        throw std::logic_error("Using slim mode expected");
     }
 
     const char* a2[] = {"osm2pgsql", "tests/liechtenstein-2013-08-03.osm.pbf"};
     options = options_t(len(a2), const_cast<char **>(a2));
-    mid = middle_t::create_middle(options.slim);
-    if(dynamic_cast<middle_ram_t *>(mid.get()) == nullptr)
-    {
-        throw std::logic_error("Using without slim mode we expected a ram middle");
+    if (options.slim) {
+        throw std::logic_error("Using without slim mode expected");
     }
 }
 
 void test_outputs()
 {
-    const char* a1[] = {"osm2pgsql", "-O", "pgsql", "--style", "default.style", "tests/liechtenstein-2013-08-03.osm.pbf"};
+    pg::tempdb db;
+    const char* a1[] = {"osm2pgsql", "-d", db.database_options.db->c_str(), "-O", "pgsql", "--style", "default.style", "tests/liechtenstein-2013-08-03.osm.pbf"};
     options_t options = options_t(len(a1), const_cast<char **>(a1));
-    std::shared_ptr<middle_t> mid = middle_t::create_middle(options.slim);
-    std::vector<std::shared_ptr<output_t> > outs = output_t::create_outputs(mid.get(), options);
+    auto middle_ram = std::make_shared<middle_ram_t>(&options);
+    auto mid = middle_ram->get_query_instance(middle_ram);
+    auto outs = output_t::create_outputs(mid, options);
     output_t* out = outs.front().get();
     if(dynamic_cast<output_pgsql_t *>(out) == nullptr)
     {
         throw std::logic_error("Expected a pgsql output");
     }
 
-    const char* a2[] = {"osm2pgsql", "-O", "gazetteer", "--style", "default.style", "tests/liechtenstein-2013-08-03.osm.pbf"};
+    const char* a2[] = {"osm2pgsql", "-d", db.database_options.db->c_str(), "-O", "gazetteer", "--style", "tests/gazetteer-test.style", "tests/liechtenstein-2013-08-03.osm.pbf"};
     options = options_t(len(a2), const_cast<char **>(a2));
-    mid = middle_t::create_middle(options.slim);
-    outs = output_t::create_outputs(mid.get(), options);
+    outs = output_t::create_outputs(mid, options);
     out = outs.front().get();
     if(dynamic_cast<output_gazetteer_t *>(out) == nullptr)
     {
         throw std::logic_error("Expected a gazetteer output");
     }
 
-    const char* a3[] = {"osm2pgsql", "-O", "null", "--style", "default.style", "tests/liechtenstein-2013-08-03.osm.pbf"};
+    const char* a3[] = {"osm2pgsql", "-d", db.database_options.db->c_str(), "-O", "null", "--style", "default.style", "tests/liechtenstein-2013-08-03.osm.pbf"};
     options = options_t(len(a3), const_cast<char **>(a3));
-    mid = middle_t::create_middle(options.slim);
-    outs = output_t::create_outputs(mid.get(), options);
+    outs = output_t::create_outputs(mid, options);
     out = outs.front().get();
     if(dynamic_cast<output_null_t *>(out) == nullptr)
     {
         throw std::logic_error("Expected a null output");
     }
 
-    const char* a4[] = {"osm2pgsql", "-O", "keine_richtige_ausgabe", "--style", "default.style", "tests/liechtenstein-2013-08-03.osm.pbf"};
+    const char* a4[] = {"osm2pgsql", "-d", db.database_options.db->c_str(), "-O", "keine_richtige_ausgabe", "--style", "default.style", "tests/liechtenstein-2013-08-03.osm.pbf"};
     options = options_t(len(a4), const_cast<char **>(a4));
-    mid = middle_t::create_middle(options.slim);
     try
     {
-        outs = output_t::create_outputs(mid.get(), options);
+        outs = output_t::create_outputs(mid, options);
         out = outs.front().get();
         throw std::logic_error("Expected 'not recognised'");
     }
@@ -141,8 +139,9 @@ void test_lua_styles()
     options_t options = options_t(len(a1), const_cast<char **>(a1));
 
     try {
+        export_list exlist;
         std::unique_ptr<tagtransform_t> tagtransform =
-            tagtransform_t::make_tagtransform(&options);
+            tagtransform_t::make_tagtransform(&options, exlist);
         throw std::logic_error("Expected 'No such file or directory'");
     } catch (const std::runtime_error &e) {
         if (!alg::icontains(e.what(), "No such file or directory"))
@@ -296,156 +295,10 @@ void test_parsing_tile_expiry_zoom_levels_fails()
                "must be larger than 0.");
 }
 
-int get_random_proj(std::vector<std::string>& args)
-{
-    int proj = rand() % 3;
-    switch(proj)
-    {
-        case 1:
-            args.push_back("-l");
-            return PROJ_LATLONG;
-        case 2:
-            args.push_back("-m");
-            return PROJ_SPHERE_MERC;
-    }
-
-    args.push_back("--proj");
-    //nice contiguous block of valid epsgs here randomly use one of those..
-    proj = (rand() % (2962 - 2308)) + 2308;
-    args.push_back((boost::format("%1%") % proj).str());
-    return proj;
-}
-
-std::string get_random_string(const int length)
-{
-    std::string charset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890");
-    std::string result;
-    result.resize(length);
-
-    for (int i = 0; i < length; i++)
-        result[i] = charset[rand() % charset.length()];
-
-    return result;
-}
-
-template<typename T>
-void add_arg_or_not(const char* arg, std::vector<std::string>& args, T& option)
-{
-    if(rand() % 2)
-    {
-        args.push_back(arg);
-        option = 1;
-    }
-    else
-        option = 0;
-}
-
-void add_arg_and_val_or_not(const char* arg, std::vector<std::string>& args, int option, const int val)
-{
-    if(rand() % 2)
-    {
-        args.push_back(arg);
-        args.push_back((boost::format("%1%") % val).str());
-        option = val;
-    }
-}
-
-void add_arg_and_val_or_not(const char* arg, std::vector<std::string>& args, const char *option, std::string val)
-{
-    if(rand() % 2)
-    {
-        args.push_back(arg);
-        args.push_back(val);
-        option = val.c_str();
-    }
-}
-
-void test_random_perms()
-{
-
-    for(int i = 0; i < 5; ++i)
-    {
-        options_t options;
-        std::vector<std::string> args;
-        args.push_back("osm2pgsql");
-
-        //pick a projection
-        options.projection.reset(reprojection::create_projection(get_random_proj(args)));
-
-        //pick a style file
-        std::string style = get_random_string(15);
-        options.style = style.c_str();
-        args.push_back("--style");
-        args.push_back(style);
-
-        add_arg_and_val_or_not("--cache", args, options.cache, rand() % 800);
-        if (options.database_options.db) {
-            add_arg_and_val_or_not("--database", args, options.database_options.db->c_str(), get_random_string(6));
-        }
-        if (options.database_options.username) {
-            add_arg_and_val_or_not("--username", args, options.database_options.username->c_str(), get_random_string(6));
-        }
-        if (options.database_options.host) {
-            add_arg_and_val_or_not("--host", args, options.database_options.host->c_str(), get_random_string(6));
-        }
-        //add_arg_and_val_or_not("--port", args, options.port, rand() % 9999);
-
-        //--hstore-match-only
-        //--hstore-column   Add an additional hstore (key/value) column containing all tags that start with the specified string, eg --hstore-column "name:" will produce an extra hstore column that contains all name:xx tags
-
-        add_arg_or_not("--hstore-add-index", args, options.enable_hstore_index);
-
-        //--tablespace-index    The name of the PostgreSQL tablespace where all indexes will be created. The following options allow more fine-grained control:
-        //      --tablespace-main-data    tablespace for main tables
-        //      --tablespace-main-index   tablespace for main table indexes
-        //      --tablespace-slim-data    tablespace for slim mode tables
-        //      --tablespace-slim-index   tablespace for slim mode indexes
-        //                    (if unset, use db's default; -i is equivalent to setting
-        //                    --tablespace-main-index and --tablespace-slim-index)
-
-        add_arg_and_val_or_not("--number-processes", args, options.num_procs, rand() % 12);
-
-        //add_arg_or_not("--disable-parallel-indexing", args, options.parallel_indexing);
-
-        add_arg_or_not("--unlogged", args, options.unlogged);
-
-        //--cache-strategy  Specifies the method used to cache nodes in ram. Available options are: dense chunk sparse optimized
-
-        if (options.flat_node_file) {
-            add_arg_and_val_or_not("--flat-nodes", args, options.flat_node_file->c_str(), get_random_string(15));
-        }
-
-        //--expire-tiles [min_zoom-]max_zoom    Create a tile expiry list.
-
-        add_arg_and_val_or_not("--expire-output", args, options.expire_tiles_filename.c_str(), get_random_string(15));
-
-        //--bbox        Apply a bounding box filter on the imported data Must be specified as: minlon,minlat,maxlon,maxlat e.g. --bbox -0.5,51.25,0.5,51.75
-
-        add_arg_and_val_or_not("--prefix", args, options.prefix.c_str(), get_random_string(15));
-
-        //--input-reader    Input frontend. auto, o5m, xml, pbf
-
-        if (options.tag_transform_script) {
-            add_arg_and_val_or_not("--tag-transform-script", args, options.tag_transform_script->c_str(), get_random_string(15));
-        }
-        add_arg_or_not("--extra-attributes", args, options.extra_attributes);
-        add_arg_or_not("--multi-geometry", args, options.enable_multi);
-        add_arg_or_not("--keep-coastlines", args, options.keep_coastlines);
-
-        //add the input file
-        args.push_back("tests/liechtenstein-2013-08-03.osm.pbf");
-
-        const char** argv = new const char*[args.size() + 1];
-        argv[args.size()] = nullptr;
-        for(std::vector<std::string>::const_iterator arg = args.begin(); arg != args.end(); ++arg)
-            argv[arg - args.begin()] = arg->c_str();
-        options_t((int) args.size(), const_cast<char **>(argv));
-        delete[] argv;
-    }
-}
-
 int main(int argc, char *argv[])
 {
+    (void)argc;
+    (void)argv;
     srand(0);
 
     //try each test if any fail we will exit
@@ -454,7 +307,6 @@ int main(int argc, char *argv[])
     run_test("test_middles", test_middles);
     run_test("test_outputs", test_outputs);
     run_test("test_lua_styles", test_lua_styles);
-    run_test("test_random_perms", test_random_perms);
     run_test("test_parsing_tile_expiry_zoom_levels_fails",
              test_parsing_tile_expiry_zoom_levels_fails);
     run_test("test_parsing_tile_expiry_zoom_levels",

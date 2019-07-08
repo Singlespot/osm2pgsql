@@ -12,7 +12,6 @@
 
 #include <stack>
 
-#include <boost/noncopyable.hpp>
 #include <osmium/thread/pool.hpp>
 
 #include "options.hpp"
@@ -20,6 +19,7 @@
 struct expire_tiles;
 struct id_tracker;
 struct middle_query_t;
+class db_copy_thread_t;
 
 struct pending_job_t {
     osmid_t osm_id;
@@ -31,14 +31,20 @@ struct pending_job_t {
 
 typedef std::stack<pending_job_t> pending_queue_t;
 
-class output_t : public boost::noncopyable {
+class output_t
+{
 public:
-    static std::vector<std::shared_ptr<output_t> > create_outputs(const middle_query_t *mid, const options_t &options);
+    static std::vector<std::shared_ptr<output_t>>
+    create_outputs(std::shared_ptr<middle_query_t> const &mid,
+                   options_t const &options);
 
-    output_t(const middle_query_t *mid, const options_t &options_);
+    output_t(std::shared_ptr<middle_query_t> const &mid,
+             options_t const &options);
     virtual ~output_t();
 
-    virtual std::shared_ptr<output_t> clone(const middle_query_t* cloned_middle) const = 0;
+    virtual std::shared_ptr<output_t>
+    clone(std::shared_ptr<middle_query_t> const &mid,
+          std::shared_ptr<db_copy_thread_t> const &copy_thread) const = 0;
 
     virtual int start() = 0;
     virtual void stop(osmium::thread::Pool *pool) = 0;
@@ -70,8 +76,7 @@ public:
     virtual void merge_expire_trees(output_t *other);
 
 protected:
-
-    const middle_query_t* m_mid;
+    std::shared_ptr<middle_query_t> m_mid;
     const options_t m_options;
 };
 

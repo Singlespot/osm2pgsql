@@ -8,24 +8,23 @@
 
 #include <osmium/thread/pool.hpp>
 
+#include "db-copy.hpp"
 #include "middle.hpp"
 #include "node-ram-cache.hpp"
 #include "osmdata.hpp"
 #include "output.hpp"
 
 osmdata_t::osmdata_t(std::shared_ptr<middle_t> mid_,
-                     std::shared_ptr<output_t> const &out_,
-                     std::shared_ptr<reprojection> proj)
-: mid(mid_), projection(proj)
+                     std::shared_ptr<output_t> const &out_)
+: mid(mid_)
 {
     outs.push_back(out_);
     with_extra = outs[0]->get_options()->extra_attributes;
 }
 
 osmdata_t::osmdata_t(std::shared_ptr<middle_t> mid_,
-                     std::vector<std::shared_ptr<output_t> > const &outs_,
-                     std::shared_ptr<reprojection> proj)
-: mid(mid_), outs(outs_), projection(proj)
+                     std::vector<std::shared_ptr<output_t>> const &outs_)
+: mid(mid_), outs(outs_)
 {
     if (outs.empty()) {
         throw std::runtime_error("Must have at least one output, but none have "
@@ -33,10 +32,6 @@ osmdata_t::osmdata_t(std::shared_ptr<middle_t> mid_,
     }
 
     with_extra = outs[0]->get_options()->extra_attributes;
-}
-
-osmdata_t::~osmdata_t()
-{
 }
 
 int osmdata_t::node_add(osmium::Node const &node)
@@ -177,7 +172,11 @@ void osmdata_t::start() {
     for (auto& out: outs) {
         out->start();
     }
-    mid->start(outs[0]->get_options());
+}
+
+void osmdata_t::type_changed(osmium::item_type new_type)
+{
+    mid->flush(new_type);
 }
 
 namespace {
@@ -187,8 +186,7 @@ namespace {
 //since the fetching from middle should be faster than the processing in each backend.
 
 struct pending_threaded_processor : public middle_t::pending_processor {
-    typedef std::vector<std::shared_ptr<output_t>> output_vec_t;
-    typedef std::pair<std::shared_ptr<middle_query_t>, output_vec_t> clone_t;
+    using output_vec_t = std::vector<std::shared_ptr<output_t>>;
 
     static void do_jobs(output_vec_t const& outputs, pending_queue_t& queue, size_t& ids_done, std::mutex& mutex, int append, bool ways) {
         while (true) {
@@ -250,15 +248,17 @@ struct pending_threaded_processor : public middle_t::pending_processor {
         for (size_t i = 0; i < thread_count; ++i) {
             //clone the middle
             auto mid_clone = mid->get_query_instance(mid);
+            auto copy_thread = std::make_shared<db_copy_thread_t>(
+                outs[0]->get_options()->database_options.conninfo());
 
             //clone the outs
             output_vec_t out_clones;
             for (const auto& out: outs) {
-                out_clones.push_back(out->clone(mid_clone.get()));
+                out_clones.push_back(out->clone(mid_clone, copy_thread));
             }
 
             //keep the clones for a specific thread to use
-            clones.push_back(clone_t(mid_clone, out_clones));
+            clones.push_back(out_clones);
         }
     }
 
@@ -283,11 +283,10 @@ struct pending_threaded_processor : public middle_t::pending_processor {
 
         //make the threads and start them
         std::vector<std::future<void>> workers;
-        for (size_t i = 0; i < clones.size(); ++i) {
-            workers.push_back(std::async(std::launch::async,
-                                         do_jobs, std::cref(clones[i].second),
-                                         std::ref(queue), std::ref(ids_done),
-                                         std::ref(mutex), append, true));
+        for (auto const &clone : clones) {
+            workers.push_back(std::async(
+                std::launch::async, do_jobs, std::cref(clone), std::ref(queue),
+                std::ref(ids_done), std::ref(mutex), append, true));
         }
         workers.push_back(std::async(std::launch::async, print_stats,
                                      std::ref(queue), std::ref(mutex)));
@@ -316,10 +315,12 @@ struct pending_threaded_processor : public middle_t::pending_processor {
 
         //collect all the new rels that became pending from each
         //output in each thread back to their respective main outputs
-        for (const auto& clone: clones) {
+        for (auto const &clone : clones) {
             //for each clone/original output
-            for(output_vec_t::const_iterator original_output = outs.begin(), clone_output = clone.second.begin();
-                original_output != outs.end() && clone_output != clone.second.end(); ++original_output, ++clone_output) {
+            for (output_vec_t::const_iterator original_output = outs.begin(),
+                                              clone_output = clone.begin();
+                 original_output != outs.end() && clone_output != clone.end();
+                 ++original_output, ++clone_output) {
                 //done copying ways for now
                 clone_output->get()->commit();
                 //merge the pending from this threads copy of output back
@@ -345,11 +346,10 @@ struct pending_threaded_processor : public middle_t::pending_processor {
 
         //make the threads and start them
         std::vector<std::future<void>> workers;
-        for (size_t i = 0; i < clones.size(); ++i) {
-            workers.push_back(std::async(std::launch::async,
-                                         do_jobs, std::cref(clones[i].second),
-                                         std::ref(queue), std::ref(ids_done),
-                                         std::ref(mutex), append, false));
+        for (auto const &clone : clones) {
+            workers.push_back(std::async(
+                std::launch::async, do_jobs, std::cref(clone), std::ref(queue),
+                std::ref(ids_done), std::ref(mutex), append, false));
         }
         workers.push_back(std::async(std::launch::async, print_stats,
                                      std::ref(queue), std::ref(mutex)));
@@ -377,10 +377,12 @@ struct pending_threaded_processor : public middle_t::pending_processor {
         ids_done = 0;
 
         //collect all expiry tree informations together into one
-        for (const auto& clone: clones) {
+        for (auto const &clone : clones) {
             //for each clone/original output
-            for(output_vec_t::const_iterator original_output = outs.begin(), clone_output = clone.second.begin();
-                original_output != outs.end() && clone_output != clone.second.end(); ++original_output, ++clone_output) {
+            for (output_vec_t::const_iterator original_output = outs.begin(),
+                                              clone_output = clone.begin();
+                 original_output != outs.end() && clone_output != clone.end();
+                 ++original_output, ++clone_output) {
                 //done copying rels for now
                 clone_output->get()->commit();
                 //merge the expire tree from this threads copy of output back
@@ -390,8 +392,8 @@ struct pending_threaded_processor : public middle_t::pending_processor {
     }
 
 private:
-    //middle and output copies
-    std::vector<clone_t> clones;
+    // output copies, one vector per thread
+    std::vector<output_vec_t> clones;
     output_vec_t outs; //would like to move ownership of outs to osmdata_t and middle passed to output_t instead of owned by it
     //how many jobs do we have in the queue to start with
     size_t ids_queued;
@@ -420,12 +422,18 @@ void osmdata_t::stop() {
     }
 
     // should be the same for all outputs
-    const bool append = outs[0]->get_options()->append;
+    auto *opts = outs[0]->get_options();
 
-    {
+    // are there any objects left pending?
+    bool has_pending = mid->pending_count() > 0;
+    for (auto const &out : outs) {
+        has_pending |= out->pending_count() > 0;
+    }
+
+    if (has_pending) {
         //threaded pending processing
-        pending_threaded_processor ptp(
-            mid, outs, outs[0]->get_options()->num_procs, append);
+        pending_threaded_processor ptp(mid, outs, opts->num_procs,
+                                       opts->append);
 
         if (!outs.empty()) {
             //This stage takes ways which were processed earlier, but might be
@@ -444,7 +452,6 @@ void osmdata_t::stop() {
     // Clustering, index creation, and cleanup.
     // All the intensive parts of this are long-running PostgreSQL commands
     {
-        auto *opts = outs[0]->get_options();
         osmium::thread::Pool pool(opts->parallel_indexing ? opts->num_procs : 1,
                                   512);
 

@@ -60,10 +60,10 @@ void test_area_base(bool latlon, bool reproj, double expect_area_poly, double ex
         exit(77);
     }
 
-    std::shared_ptr<middle_pgsql_t> mid_pgsql(new middle_pgsql_t());
     options_t options;
     options.database_options = db->database_options;
     options.num_procs = 1;
+    options.slim = true;
     options.style = "default.style";
     options.prefix = "osm2pgsql_test";
     if (latlon) {
@@ -73,11 +73,7 @@ void test_area_base(bool latlon, bool reproj, double expect_area_poly, double ex
         options.reproject_area = true;
     }
 
-    auto out_test = std::make_shared<output_pgsql_t>(mid_pgsql.get(), options);
-
-    osmdata_t osmdata(mid_pgsql, out_test, options.projection);
-    testing::parse("tests/test_output_pgsql_area.osm", "xml",
-                   options, &osmdata);
+    testing::run_osm2pgsql(options, "tests/test_output_pgsql_area.osm", "xml");
 
     db->check_count(2, "SELECT COUNT(*) FROM osm2pgsql_test_polygon");
     db->check_number(expect_area_poly, "SELECT way_area FROM osm2pgsql_test_polygon WHERE name='poly'");
@@ -99,6 +95,8 @@ void test_area_latlon_with_reprojection() {
 }
 
 int main(int argc, char *argv[]) {
+    (void)argc;
+    (void)argv;
     RUN_TEST(test_area_latlon);
     RUN_TEST(test_area_classic);
     RUN_TEST(test_area_latlon_with_reprojection);

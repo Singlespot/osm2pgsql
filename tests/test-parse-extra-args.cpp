@@ -39,10 +39,11 @@ struct test_output_t : public output_null_t
     virtual ~test_output_t() {}
 
     std::shared_ptr<output_t>
-    clone(const middle_query_t *cloned_middle) const override
+    clone(std::shared_ptr<middle_query_t> const &mid,
+          std::shared_ptr<db_copy_thread_t> const &) const override
     {
         test_output_t *clone = new test_output_t(*this);
-        clone->m_mid = cloned_middle;
+        clone->m_mid = mid;
         return std::shared_ptr<output_t>(clone);
     }
 
@@ -59,7 +60,6 @@ struct test_output_t : public output_null_t
         assert(way->id() > 0);
         sum_ids += (unsigned)way->id();
         num_ways += 1;
-        assert(way->nodes().size() >= 0);
         num_nds += uint64_t(way->nodes().size());
         return 0;
     }
@@ -69,7 +69,6 @@ struct test_output_t : public output_null_t
         assert(rel.id() > 0);
         sum_ids += (unsigned)rel.id();
         num_relations += 1;
-        assert(rel.members().size() >= 0);
         num_members += uint64_t(rel.members().size());
         return 0;
     }
@@ -85,6 +84,8 @@ void assert_equal(uint64_t actual, uint64_t expected)
 
 int main(int argc, char *argv[])
 {
+    (void)argc;
+    (void)argv;
 
     std::string inputfile = "tests/test_multipolygon.osm";
 
@@ -95,8 +96,7 @@ int main(int argc, char *argv[])
     options.extra_attributes = true;
 
     auto out_test = std::make_shared<test_output_t>(options);
-    osmdata_t osmdata(std::make_shared<dummy_middle_t>(), out_test,
-                      options.projection);
+    osmdata_t osmdata(std::make_shared<dummy_middle_t>(), out_test);
 
     boost::optional<std::string> bbox;
     parse_osmium_t parser(bbox, false, &osmdata);

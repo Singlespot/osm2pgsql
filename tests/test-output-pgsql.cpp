@@ -7,12 +7,13 @@
 #include <stdexcept>
 #include <memory>
 
-#include "osmtypes.hpp"
-#include "osmdata.hpp"
-#include "output-pgsql.hpp"
-#include "options.hpp"
+#include "db-copy.hpp"
 #include "middle-pgsql.hpp"
 #include "middle-ram.hpp"
+#include "options.hpp"
+#include "osmdata.hpp"
+#include "osmtypes.hpp"
+#include "output-pgsql.hpp"
 #include "taginfo_impl.hpp"
 
 #include <sys/types.h>
@@ -20,7 +21,6 @@
 
 #include <boost/lexical_cast.hpp>
 
-#include "tests/middle-tests.hpp"
 #include "tests/common-pg.hpp"
 #include "tests/common-cleanup.hpp"
 #include "tests/common.hpp"
@@ -67,7 +67,6 @@ void test_regression_simple() {
     std::string proc_name("test-output-pgsql"), input_file("-");
     char *argv[] = { &proc_name[0], &input_file[0], nullptr };
 
-    std::shared_ptr<middle_pgsql_t> mid_pgsql(new middle_pgsql_t());
     options_t options = options_t(2, argv);
     options.database_options = db->database_options;
     options.num_procs = 1;
@@ -75,12 +74,8 @@ void test_regression_simple() {
     options.slim = true;
     options.style = "default.style";
 
-    auto out_test = std::make_shared<output_pgsql_t>(mid_pgsql.get(), options);
-
-    osmdata_t osmdata(mid_pgsql, out_test, options.projection);
-
-    testing::parse("tests/liechtenstein-2013-08-03.osm.pbf", "pbf",
-                   options, &osmdata);
+    testing::run_osm2pgsql(options, "tests/liechtenstein-2013-08-03.osm.pbf",
+                           "pbf");
 
     db->assert_has_table("osm2pgsql_test_point");
     db->assert_has_table("osm2pgsql_test_line");
@@ -90,7 +85,7 @@ void test_regression_simple() {
     db->check_count(1342, "SELECT count(*) FROM osm2pgsql_test_point");
     db->check_count(3231, "SELECT count(*) FROM osm2pgsql_test_line");
     db->check_count( 375, "SELECT count(*) FROM osm2pgsql_test_roads");
-    db->check_count(4127, "SELECT count(*) FROM osm2pgsql_test_polygon");
+    db->check_count(4130, "SELECT count(*) FROM osm2pgsql_test_polygon");
 
     // Check size of lines
     db->check_number(1696.04, "SELECT ST_Length(way) FROM osm2pgsql_test_line WHERE osm_id = 1101");
@@ -117,7 +112,6 @@ void test_latlong() {
     std::string proc_name("test-output-pgsql"), input_file("-");
     char *argv[] = { &proc_name[0], &input_file[0], nullptr };
 
-    std::shared_ptr<middle_pgsql_t> mid_pgsql(new middle_pgsql_t());
     options_t options = options_t(2, argv);
     options.database_options = db->database_options;
     options.num_procs = 1;
@@ -127,12 +121,8 @@ void test_latlong() {
 
     options.projection.reset(reprojection::create_projection(PROJ_LATLONG));
 
-    auto out_test = std::make_shared<output_pgsql_t>(mid_pgsql.get(), options);
-
-    osmdata_t osmdata(mid_pgsql, out_test, options.projection);
-
-    testing::parse("tests/liechtenstein-2013-08-03.osm.pbf", "pbf",
-                   options, &osmdata);
+    testing::run_osm2pgsql(options, "tests/liechtenstein-2013-08-03.osm.pbf",
+                           "pbf");
 
     db->assert_has_table("osm2pgsql_test_point");
     db->assert_has_table("osm2pgsql_test_line");
@@ -142,7 +132,7 @@ void test_latlong() {
     db->check_count(1342, "SELECT count(*) FROM osm2pgsql_test_point");
     db->check_count(3229, "SELECT count(*) FROM osm2pgsql_test_line");
     db->check_count(374, "SELECT count(*) FROM osm2pgsql_test_roads");
-    db->check_count(4127, "SELECT count(*) FROM osm2pgsql_test_polygon");
+    db->check_count(4130, "SELECT count(*) FROM osm2pgsql_test_polygon");
 
     // Check size of lines
     db->check_number(0.0105343, "SELECT ST_Length(way) FROM osm2pgsql_test_line WHERE osm_id = 1101");
@@ -170,7 +160,6 @@ void test_area_way_simple() {
     std::string proc_name("test-output-pgsql"), input_file("-");
     char *argv[] = { &proc_name[0], &input_file[0], nullptr };
 
-    std::shared_ptr<middle_pgsql_t> mid_pgsql(new middle_pgsql_t());
     options_t options = options_t(2, argv);
     options.database_options = db->database_options;
     options.num_procs = 1;
@@ -180,12 +169,8 @@ void test_area_way_simple() {
     options.flat_node_cache_enabled = true;
     options.flat_node_file = boost::optional<std::string>(FLAT_NODES_FILE_NAME);
 
-    auto out_test = std::make_shared<output_pgsql_t>(mid_pgsql.get(), options);
-
-    osmdata_t osmdata(mid_pgsql, out_test, options.projection);
-
-    testing::parse("tests/test_output_pgsql_way_area.osm", "xml",
-                   options, &osmdata);
+    testing::run_osm2pgsql(options, "tests/test_output_pgsql_way_area.osm",
+                           "xml");
 
     db->assert_has_table("osm2pgsql_test_point");
     db->assert_has_table("osm2pgsql_test_line");
@@ -211,7 +196,6 @@ void test_route_rel() {
     std::string proc_name("test-output-pgsql"), input_file("-");
     char *argv[] = { &proc_name[0], &input_file[0], nullptr };
 
-    std::shared_ptr<middle_ram_t> mid_ram(new middle_ram_t());
     options_t options = options_t(2, argv);
     options.database_options = db->database_options;
     options.num_procs = 1;
@@ -219,12 +203,8 @@ void test_route_rel() {
     options.slim = false;
     options.style = "default.style";
 
-    auto out_test = std::make_shared<output_pgsql_t>(mid_ram.get(), options);
-
-    osmdata_t osmdata(mid_ram, out_test, options.projection);
-
-    testing::parse("tests/test_output_pgsql_route_rel.osm", "xml",
-                   options, &osmdata);
+    testing::run_osm2pgsql(options, "tests/test_output_pgsql_route_rel.osm",
+                           "xml");
 
     db->assert_has_table("osm2pgsql_test_point");
     db->assert_has_table("osm2pgsql_test_line");
@@ -252,7 +232,6 @@ void test_clone() {
     std::string proc_name("test-output-pgsql"), input_file("-");
     char *argv[] = { &proc_name[0], &input_file[0], nullptr };
 
-    std::shared_ptr<middle_pgsql_t> mid_pgsql(new middle_pgsql_t());
     options_t options = options_t(2, argv);
     options.database_options = db->database_options;
     options.num_procs = 1;
@@ -260,13 +239,17 @@ void test_clone() {
     options.slim = true;
     options.style = "default.style";
 
-    output_pgsql_t out_test(mid_pgsql.get(), options);
+    auto mid_pgsql = std::make_shared<middle_pgsql_t>(&options);
+    mid_pgsql->start();
+    auto ct =
+        std::make_shared<db_copy_thread_t>(db->database_options.conninfo());
+    output_pgsql_t out_test(mid_pgsql->get_query_instance(mid_pgsql), options,
+                            ct);
 
-    //TODO: make the middle testable too
-    //std::shared_ptr<middle_t> mid_clone = mid_pgsql->get_instance();
-    std::shared_ptr<output_t> out_clone = out_test.clone(mid_pgsql.get());
+    std::shared_ptr<output_t> out_clone =
+        out_test.clone(mid_pgsql->get_query_instance(mid_pgsql), ct);
 
-    osmdata_t osmdata(mid_pgsql, out_clone, options.projection);
+    osmdata_t osmdata(std::static_pointer_cast<middle_t>(mid_pgsql), out_clone);
 
     testing::parse("tests/liechtenstein-2013-08-03.osm.pbf", "pbf",
                    options, &osmdata);
@@ -279,12 +262,14 @@ void test_clone() {
     db->check_count(1342, "SELECT count(*) FROM osm2pgsql_test_point");
     db->check_count(3231, "SELECT count(*) FROM osm2pgsql_test_line");
     db->check_count( 375, "SELECT count(*) FROM osm2pgsql_test_roads");
-    db->check_count(4127, "SELECT count(*) FROM osm2pgsql_test_polygon");
+    db->check_count(4130, "SELECT count(*) FROM osm2pgsql_test_polygon");
 }
 
 } // anonymous namespace
 
 int main(int argc, char *argv[]) {
+    (void)argc;
+    (void)argv;
     // remove flat nodes file  on exit - it's 20GB and bad manners to
     // leave that lying around on the filesystem.
     cleanup::file flat_nodes_file(FLAT_NODES_FILE_NAME);

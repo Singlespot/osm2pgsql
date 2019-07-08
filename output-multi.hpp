@@ -23,16 +23,24 @@ struct export_list;
 struct middle_query_t;
 struct options_t;
 
-class output_multi_t : public output_t {
+class output_multi_t : public output_t
+{
+    output_multi_t(output_multi_t const *other,
+                   std::shared_ptr<middle_query_t> const &mid,
+                   std::shared_ptr<db_copy_thread_t> const &copy_thread);
+
 public:
-    output_multi_t(const std::string &name,
+    output_multi_t(std::string const &name,
                    std::shared_ptr<geometry_processor> processor_,
-                   const export_list &export_list_,
-                   const middle_query_t* mid_, const options_t &options_);
-    output_multi_t(const output_multi_t& other);
+                   export_list const &export_list,
+                   std::shared_ptr<middle_query_t> const &mid,
+                   options_t const &options,
+                   std::shared_ptr<db_copy_thread_t> const &copy_thread);
     virtual ~output_multi_t();
 
-    std::shared_ptr<output_t> clone(const middle_query_t* cloned_middle) const override;
+    std::shared_ptr<output_t>
+    clone(std::shared_ptr<middle_query_t> const &mid,
+          std::shared_ptr<db_copy_thread_t> const &copy_thread) const override;
 
     int start() override;
     void stop(osmium::thread::Pool *pool) override;
@@ -67,13 +75,12 @@ protected:
     int process_node(osmium::Node const &node);
     int process_way(osmium::Way *way);
     int reprocess_way(osmium::Way *way, bool exists);
-    int process_relation(osmium::Relation const &rel, bool exists, bool pending=false);
+    int process_relation(osmium::Relation const &rel, bool exists);
     void copy_node_to_table(osmid_t id, const std::string &geom, taglist_t &tags);
     void copy_to_table(const osmid_t id, geometry_processor::wkb_t const &geom,
                        taglist_t &tags);
 
     std::unique_ptr<tagtransform_t> m_tagtransform;
-    std::unique_ptr<export_list> m_export_list;
     std::shared_ptr<geometry_processor> m_processor;
     std::shared_ptr<reprojection> m_proj;
     osmium::item_type const m_osm_type;

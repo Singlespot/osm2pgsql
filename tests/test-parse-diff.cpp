@@ -35,27 +35,29 @@ struct test_output_t : public dummy_output_t {
 
     virtual ~test_output_t() = default;
 
-    std::shared_ptr<output_t> clone(const middle_query_t *cloned_middle) const override {
+    std::shared_ptr<output_t>
+    clone(std::shared_ptr<middle_query_t> const &mid,
+          std::shared_ptr<db_copy_thread_t> const &) const override
+    {
         test_output_t *clone = new test_output_t(m_options);
-        clone->m_mid = cloned_middle;
+        clone->m_mid = mid;
         return std::shared_ptr<output_t>(clone);
     }
 
-    int node_add(osmium::Node const &n) override
+    int node_add(osmium::Node const &) override
     {
-        assert(n.id() > 0);
         ++node.added;
         return 0;
     }
 
-    int way_add(osmium::Way *w) override {
-        assert(w->id() > 0);
+    int way_add(osmium::Way *) override
+    {
         ++way.added;
         return 0;
     }
 
-    int relation_add(osmium::Relation const &r) override {
-        assert(r.id() > 0);
+    int relation_add(osmium::Relation const &) override
+    {
         ++rel.added;
         return 0;
     }
@@ -107,7 +109,7 @@ int main() {
   options.projection = projection;
 
   auto out_test = std::make_shared<test_output_t>(options);
-  osmdata_t osmdata(std::make_shared<dummy_slim_middle_t>(), out_test, options.projection);
+  osmdata_t osmdata(std::make_shared<dummy_slim_middle_t>(), out_test);
 
   boost::optional<std::string> bbox;
   parse_osmium_t parser(bbox, true, &osmdata);

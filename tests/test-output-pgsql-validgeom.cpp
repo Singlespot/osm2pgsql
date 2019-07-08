@@ -64,26 +64,22 @@ void test_z_order() {
     std::string proc_name("test-output-pgsql-validgeom"), input_file("-");
     char *argv[] = { &proc_name[0], &input_file[0], nullptr };
 
-    std::shared_ptr<middle_pgsql_t> mid_pgsql(new middle_pgsql_t());
     options_t options = options_t(2, argv);
     options.database_options = db->database_options;
     options.num_procs = 1;
+    options.slim = true;
     options.prefix = "osm2pgsql_test";
     options.style = "default.style";
 
-    auto out_test = std::make_shared<output_pgsql_t>(mid_pgsql.get(), options);
-
-    osmdata_t osmdata(mid_pgsql, out_test, options.projection);
-
-    testing::parse("tests/test_output_pgsql_validgeom.osm", "xml",
-                   options, &osmdata);
+    testing::run_osm2pgsql(options, "tests/test_output_pgsql_validgeom.osm",
+                           "xml");
 
     db->assert_has_table("osm2pgsql_test_point");
     db->assert_has_table("osm2pgsql_test_line");
     db->assert_has_table("osm2pgsql_test_polygon");
     db->assert_has_table("osm2pgsql_test_roads");
 
-    db->check_count(10, "SELECT COUNT(*) FROM osm2pgsql_test_polygon");
+    db->check_count(12, "SELECT COUNT(*) FROM osm2pgsql_test_polygon");
     db->check_count(0, "SELECT COUNT(*) FROM osm2pgsql_test_polygon WHERE NOT ST_IsValid(way)");
     db->check_count(0, "SELECT COUNT(*) FROM osm2pgsql_test_polygon WHERE ST_IsEmpty(way)");
 }
@@ -91,6 +87,8 @@ void test_z_order() {
 } // anonymous namespace
 
 int main(int argc, char *argv[]) {
+    (void)argc;
+    (void)argv;
     RUN_TEST(test_z_order);
 
     return 0;

@@ -21,11 +21,6 @@
 #include <ctime>
 #include <unistd.h>
 
-#include <boost/algorithm/string/predicate.hpp>
-#include <boost/bind.hpp>
-#include <boost/exception_ptr.hpp>
-#include <boost/format.hpp>
-
 #include "expire-tiles.hpp"
 #include "middle.hpp"
 #include "node-ram-cache.hpp"
@@ -40,37 +35,6 @@
 #include "wildcmp.hpp"
 #include "wkb.hpp"
 
-/* make the diagnostic information work with older versions of
- * boost - the function signature changed at version 1.54.
- */
-#if BOOST_VERSION >= 105400
-#define BOOST_DIAGNOSTIC_INFO(e) boost::diagnostic_information((e), true)
-#else
-#define BOOST_DIAGNOSTIC_INFO(e) boost::diagnostic_information((e))
-#endif
-
-/* example from: pg_dump -F p -t planet_osm gis
-COPY planet_osm (osm_id, name, place, landuse, leisure, "natural", man_made, waterway, highway, railway, amenity, tourism, learning, building, bridge, layer, way) FROM stdin;
-17959841        \N      \N      \N      \N      \N      \N      \N      bus_stop        \N      \N      \N      \N      \N      \N    -\N      0101000020E610000030CCA462B6C3D4BF92998C9B38E04940
-17401934        The Horn        \N      \N      \N      \N      \N      \N      \N      \N      pub     \N      \N      \N      \N    -\N      0101000020E6100000C12FC937140FD5BFB4D2F4FB0CE04940
-...
-
-mine - 01 01000000 48424298424242424242424256427364
-psql - 01 01000020 E6100000 30CCA462B6C3D4BF92998C9B38E04940
-       01 01000020 E6100000 48424298424242424242424256427364
-0x2000_0000 = hasSRID, following 4 bytes = srid, not supported by geos WKBWriter
-Workaround - output SRID=4326;<WKB>
-*/
-
-
-/*
-COPY planet_osm (osm_id, name, place, landuse, leisure, "natural", man_made, waterway, highway, railway, amenity, tourism, learning, bu
-ilding, bridge, layer, way) FROM stdin;
-198497  Bedford Road    \N      \N      \N      \N      \N      \N      residential     \N      \N      \N      \N      \N      \N    \N       0102000020E610000004000000452BF702B342D5BF1C60E63BF8DF49406B9C4D470037D5BF5471E316F3DF4940DFA815A6EF35D5BF9AE95E27F5DF4940B41EB
-E4C1421D5BF24D06053E7DF4940
-212696  Oswald Road     \N      \N      \N      \N      \N      \N      minor   \N      \N      \N      \N      \N      \N      \N    0102000020E610000004000000467D923B6C22D5BFA359D93EE4DF4940B3976DA7AD11D5BF84BBB376DBDF4940997FF44D9A06D5BF4223D8B8FEDF49404D158C4AEA04D
-5BF5BB39597FCDF4940
-*/
 void output_pgsql_t::pgsql_out_way(osmium::Way const &way, taglist_t *tags,
                                    bool polygon, bool roads)
 {
@@ -163,8 +127,7 @@ int output_pgsql_t::pending_way(osmid_t id, int exists) {
         int polygon;
         int roads;
         auto &way = buffer.get<osmium::Way>(0);
-        if (!m_tagtransform->filter_tags(way, &polygon, &roads,
-                                         *m_export_list.get(), outtags)) {
+        if (!m_tagtransform->filter_tags(way, &polygon, &roads, outtags)) {
             auto nnodes = m_mid->nodes_get_list(&(way.nodes()));
             if (nnodes > 1) {
                 pgsql_out_way(way, &outtags, polygon, roads);
@@ -226,7 +189,7 @@ int output_pgsql_t::pending_relation(osmid_t id, int exists) {
         }
 
         auto const &rel = rels_buffer.get<osmium::Relation>(0);
-        return pgsql_process_relation(rel, true);
+        return pgsql_process_relation(rel);
     }
 
     return 0;
@@ -243,7 +206,10 @@ void output_pgsql_t::stop(osmium::thread::Pool *pool)
 {
     // attempt to stop tables in parallel
     for (auto &t : m_tables) {
-        pool->submit(std::bind(&table_t::stop, t));
+        pool->submit([&]() {
+            t->stop(m_options.slim & !m_options.droptemp,
+                    m_options.enable_hstore_index, m_options.tblsmain_index);
+        });
     }
 
     if (m_options.expire_tiles_zoom_min > 0) {
@@ -255,8 +221,7 @@ void output_pgsql_t::stop(osmium::thread::Pool *pool)
 int output_pgsql_t::node_add(osmium::Node const &node)
 {
     taglist_t outtags;
-    if (m_tagtransform->filter_tags(node, nullptr, nullptr,
-                                    *m_export_list.get(), outtags))
+    if (m_tagtransform->filter_tags(node, nullptr, nullptr, outtags))
         return 1;
 
     auto wkb = m_builder.get_wkb_node(node.location());
@@ -273,15 +238,9 @@ int output_pgsql_t::way_add(osmium::Way *way)
     taglist_t outtags;
 
     /* Check whether the way is: (1) Exportable, (2) Maybe a polygon */
-    auto filter = m_tagtransform->filter_tags(*way, &polygon, &roads,
-                                              *m_export_list.get(), outtags);
+    auto filter = m_tagtransform->filter_tags(*way, &polygon, &roads, outtags);
 
-    /* If this isn't a polygon then it can not be part of a multipolygon
-       Hence only polygons are "pending" */
-    if (!filter && polygon) { ways_pending_tracker.mark(way->id()); }
-
-    if( !polygon && !filter )
-    {
+    if (!filter) {
         /* Get actual node data and generate output */
         auto nnodes = m_mid->nodes_get_list(&(way->nodes()));
         if (nnodes > 1) {
@@ -293,12 +252,10 @@ int output_pgsql_t::way_add(osmium::Way *way)
 
 
 /* This is the workhorse of pgsql_add_relation, split out because it is used as the callback for iterate relations */
-int output_pgsql_t::pgsql_process_relation(osmium::Relation const &rel,
-                                           bool pending)
+int output_pgsql_t::pgsql_process_relation(osmium::Relation const &rel)
 {
     taglist_t prefiltered_tags;
-    if (m_tagtransform->filter_tags(rel, nullptr, nullptr, *m_export_list.get(),
-                                    prefiltered_tags)) {
+    if (m_tagtransform->filter_tags(rel, nullptr, nullptr, prefiltered_tags)) {
         return 1;
     }
 
@@ -320,15 +277,13 @@ int output_pgsql_t::pgsql_process_relation(osmium::Relation const &rel,
   int roads = 0;
   int make_polygon = 0;
   int make_boundary = 0;
-  std::vector<int> members_superseded(num_ways, 0);
   taglist_t outtags;
 
   // If it's a route relation make_boundary and make_polygon will be false
   // otherwise one or the other will be true.
-  if (m_tagtransform->filter_rel_member_tags(
-          prefiltered_tags, buffer, xrole, &(members_superseded[0]),
-          &make_boundary, &make_polygon, &roads, *m_export_list.get(),
-          outtags)) {
+  if (m_tagtransform->filter_rel_member_tags(prefiltered_tags, buffer, xrole,
+                                             &make_boundary, &make_polygon,
+                                             &roads, outtags)) {
       return 0;
   }
 
@@ -369,24 +324,6 @@ int output_pgsql_t::pgsql_process_relation(osmium::Relation const &rel,
           }
           m_tables[t_poly]->write_row(-rel.id(), outtags, wkb);
       }
-
-      /* Tagtransform will have marked those member ways of the relation that
-         * have fully been dealt with as part of the multi-polygon entry.
-         * Set them in the database as done and delete their entry to not
-         * have duplicates */
-      if (make_polygon) {
-          size_t j = 0;
-          for (auto &w : buffer.select<osmium::Way>()) {
-              if (members_superseded[j]) {
-                  pgsql_delete_way_from_output(w.id());
-                  // When working with pending relations this is not needed.
-                  if (!pending) {
-                      ways_done_tracker->mark(w.id());
-                  }
-              }
-              ++j;
-          }
-      }
   }
 
   return 0;
@@ -406,7 +343,7 @@ int output_pgsql_t::relation_add(osmium::Relation const &rel)
         return 0;
     }
 
-    return pgsql_process_relation(rel, false);
+    return pgsql_process_relation(rel);
 }
 
 /* Delete is easy, just remove all traces of this object. We don't need to
@@ -518,50 +455,44 @@ int output_pgsql_t::relation_modify(osmium::Relation const &rel)
 
 int output_pgsql_t::start()
 {
-    for(std::vector<std::shared_ptr<table_t> >::iterator table = m_tables.begin(); table != m_tables.end(); ++table)
-    {
+    for (auto &t : m_tables) {
         //setup the table in postgres
-        table->get()->start();
+        t->start(m_options.database_options.conninfo(),
+                 m_options.tblsmain_data);
     }
 
     return 0;
 }
 
-std::shared_ptr<output_t> output_pgsql_t::clone(const middle_query_t* cloned_middle) const
+std::shared_ptr<output_t> output_pgsql_t::clone(
+    std::shared_ptr<middle_query_t> const &mid,
+    std::shared_ptr<db_copy_thread_t> const &copy_thread) const
 {
-    auto *clone = new output_pgsql_t(*this);
-    clone->m_mid = cloned_middle;
-    return std::shared_ptr<output_t>(clone);
+    return std::shared_ptr<output_t>(
+        new output_pgsql_t(this, mid, copy_thread));
 }
 
-output_pgsql_t::output_pgsql_t(const middle_query_t *mid, const options_t &o)
+output_pgsql_t::output_pgsql_t(
+    std::shared_ptr<middle_query_t> const &mid, options_t const &o,
+    std::shared_ptr<db_copy_thread_t> const &copy_thread)
 : output_t(mid, o), m_builder(o.projection, o.enable_multi),
   expire(o.expire_tiles_zoom, o.expire_tiles_max_bbox, o.projection),
   ways_done_tracker(new id_tracker()),
   buffer(32768, osmium::memory::Buffer::auto_grow::yes),
   rels_buffer(1024, osmium::memory::Buffer::auto_grow::yes)
 {
-    m_export_list.reset(new export_list());
+    export_list exlist;
 
-    m_enable_way_area = read_style_file( m_options.style, m_export_list.get() );
+    m_enable_way_area = read_style_file(m_options.style, &exlist);
 
-    try {
-        m_tagtransform = tagtransform_t::make_tagtransform(&m_options);
-    }
-    catch(const std::runtime_error& e) {
-        fprintf(stderr, "%s\n", e.what());
-        fprintf(stderr, "Error: Failed to initialise tag processing.\n");
-        util::exit_nicely();
-    }
+    m_tagtransform = tagtransform_t::make_tagtransform(&m_options, exlist);
 
     //for each table
-    m_tables.reserve(t_MAX);
-    for (int i = 0; i < t_MAX; i++) {
+    for (size_t i = 0; i < t_MAX; i++) {
 
         //figure out the columns this table needs
-        columns_t columns = m_export_list->normal_columns((i == t_point)
-                            ? osmium::item_type::node
-                            : osmium::item_type::way);
+        columns_t columns = exlist.normal_columns(
+            (i == t_point) ? osmium::item_type::node : osmium::item_type::way);
 
         //figure out what name we are using for this and what type
         std::string name = m_options.prefix;
@@ -589,40 +520,36 @@ output_pgsql_t::output_pgsql_t(const middle_query_t *mid, const options_t &o)
                 util::exit_nicely();
         }
 
-        //tremble in awe of this massive constructor! seriously we are trying to avoid passing an
-        //options object because we want to make use of the table_t in output_mutli_t which could
-        //have a different tablespace/hstores/etc per table
-        m_tables.push_back(std::shared_ptr<table_t>(new table_t(
-            m_options.database_options.conninfo(), name, type, columns,
-            m_options.hstore_columns, m_options.projection->target_srs(),
-            m_options.append, m_options.slim, m_options.droptemp,
-            m_options.hstore_mode, m_options.enable_hstore_index,
-            m_options.tblsmain_data, m_options.tblsmain_index)));
+        m_tables[i].reset(
+            new table_t(name, type, columns, m_options.hstore_columns,
+                        m_options.projection->target_srs(), m_options.append,
+                        m_options.hstore_mode, copy_thread));
     }
 }
 
-output_pgsql_t::output_pgsql_t(const output_pgsql_t &other)
-: output_t(other.m_mid, other.m_options),
-  m_tagtransform(tagtransform_t::make_tagtransform(&m_options)),
-  m_enable_way_area(other.m_enable_way_area),
-  m_export_list(new export_list(*other.m_export_list)),
-  m_builder(m_options.projection, other.m_options.enable_multi),
+output_pgsql_t::output_pgsql_t(
+    output_pgsql_t const *other, std::shared_ptr<middle_query_t> const &mid,
+    std::shared_ptr<db_copy_thread_t> const &copy_thread)
+: output_t(mid, other->m_options),
+  m_tagtransform(other->m_tagtransform->clone()),
+  m_enable_way_area(other->m_enable_way_area),
+  m_builder(m_options.projection, other->m_options.enable_multi),
   expire(m_options.expire_tiles_zoom, m_options.expire_tiles_max_bbox,
          m_options.projection),
   //NOTE: we need to know which ways were used by relations so each thread
   //must have a copy of the original marked done ways, its read only so its ok
-  ways_done_tracker(other.ways_done_tracker),
+  ways_done_tracker(other->ways_done_tracker),
   buffer(1024, osmium::memory::Buffer::auto_grow::yes),
   rels_buffer(1024, osmium::memory::Buffer::auto_grow::yes)
 {
-    for(std::vector<std::shared_ptr<table_t> >::const_iterator t = other.m_tables.begin(); t != other.m_tables.end(); ++t) {
+    for (size_t i = 0; i < t_MAX; ++i) {
         //copy constructor will just connect to the already there table
-        m_tables.push_back(std::shared_ptr<table_t>(new table_t(**t)));
+        m_tables[i].reset(
+            new table_t(*(other->m_tables[i].get()), copy_thread));
     }
 }
 
-output_pgsql_t::~output_pgsql_t() {
-}
+output_pgsql_t::~output_pgsql_t() = default;
 
 size_t output_pgsql_t::pending_count() const {
     return ways_pending_tracker.size() + rels_pending_tracker.size();
